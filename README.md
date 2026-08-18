@@ -64,5 +64,7 @@ export PILEUP_CALLER=~/software/pileupCaller-linux   # v1.5.3.1（1.6 会 segfau
 bam:通过网盘分享的文件：ancient_bams_16.tar.gz
 链接: https://pan.baidu.com/s/1pYVcynlZCiAVCsaVK-f3Hw 提取码: p3m4 
 --来自百度网盘超级会员v5的分享
-panel:
+panel:通过网盘分享的文件：panel_720_data.tar.gz
+链接: https://pan.baidu.com/s/1i4e4v-OY1_JrBKQQbaKK6g 提取码: utws 
+--来自百度网盘超级会员v5的分享
 

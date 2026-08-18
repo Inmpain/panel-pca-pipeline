@@ -1,0 +1,144 @@
+version: ecotype_pca_v2
+
+# Source of truth for every numerical parameter used by scripts/ecotype_pca_v2/.
+# Do not hardcode any of these values in scripts. Scripts must read this file
+# and echo the values they actually used into their logs/manifests.
+#
+# Frozen by docs/ECOTYPE_PCA_V2_SPEC.md (2026-08-14). Do not edit numerical
+# values, sample roles, marker definitions, tracks, phases, validation rules
+# or confidence thresholds without explicit user instruction.
+
+ancient:
+  mapq: 30
+  baseq: 30
+  primary_track: TV
+  secondary_track: ALL
+
+pca:
+  num_pcs: 10
+  numoutlieriter: 0
+  numchrom: 12
+  numthreads: 2
+  lsqproject: true
+
+panel_A_3k:
+  axis_labels:
+    - IND
+    - AUS
+    - ARO
+    - TRJ
+    - TEJ
+  project_labels:
+    - ADM
+  geno: 0.05
+  maf: 0.01
+  ld_window_kb: 100
+  ld_r2: 0.20
+  # Spec section 5, S4: same LD window/r2 as primary, MAF relaxed to 0.05.
+  # Unique to Panel A -- not part of the shared `sensitivity` grid below.
+  sensitivity_S4_maf: 0.05
+
+panel_B_720:
+  axis_mode: all_modern
+  # 2026-08-18: relaxed from 0.10 after the 720 missingness audit; docs
+  # (PILEUPCALLER_HANDOFF/PLAN/RESULTS) and the frozen run parameters use 0.20.
+  geno: 0.20
+  maf: 0.01
+  ld_primary:
+    window_kb: 100
+    r2: 0.20
+  paperlike_5kb:
+    # 2026-08-18: backbone spacing relaxed 5kb -> 15kb (user decision); the
+    # route key name "paperlike_5kb" is frozen by spec, but 08 derives its
+    # output label from window_bp//1000 -> "paperlike_15kb".
+    window_bp: 15000
+    seed: 20260814
+  # STATUS (spec section 5): AUTHOR-PROVIDED HIGH-DENSITY VERSION.
+  # FILTER PROVENANCE UNKNOWN. NOT THE EXACT WANG2017 PCA MATRIX.
+  # Do not assume any MAF/LD filtering has already been applied upstream.
+
+panel_C_civan:
+  axis_labels:
+    - indica
+    - aus
+    - aromatic
+    - japonica
+    # Exact whitespace-sanitized strings written by
+    # build_civan_population_labels.py and present in the v1 verified
+    # domesticated-axis label file.  Do not normalize away the parentheses:
+    # EIGENSTRAT population labels are exact string keys.
+    - japonica_(temperate)
+    - japonica_(tropical)
+  expected_axis_builder_n: 595
+  project_all_other_modern: true
+  geno: 0.05
+  maf: 0.01
+  ld_window_kb: 100
+  ld_r2: 0.20
+
+# Shared LD/thinning sensitivity grid (spec section 5, S1-S3).
+# Applies identically to panel_A_3k, panel_B_720 (ld_primary route), and
+# panel_C_civan. Panel A additionally has sensitivity_S4_maf above.
+sensitivity:
+  - label: S1
+    window_kb: 50
+    r2: 0.20
+  - label: S2
+    window_kb: 200
+    r2: 0.20
+  - label: S3
+    window_kb: 100
+    r2: 0.10
+
+validation:
+  folds: 5
+  confidence_high:
+    precision: 0.80
+    recall: 0.80
+  confidence_moderate:
+    precision: 0.60
+    recall: 0.60
+  min_class_n: 10   # spec section 11: n < 10 -> INSUFFICIENT_REFERENCE_N, skip 5-fold for that class
+
+information_flags:
+  very_low: 200
+  low: 500
+  moderate: 2000
+
+# Server-side input locations (infrastructure, not statistical parameters --
+# single source of truth per spec section 14's intent, kept out of scripts).
+# Confirmed against docs/ECOTYPE_PCA_PANEL.md and file_path.md section 9
+# (2026-08-14 survey). Update only when the actual server layout changes.
+inputs:
+  panel_A_3k:
+    dir: /home/scratch/yinmt202607/db/29M_3k
+    prefix: NB_final_snp
+    filtered_suffix: .filtered   # NB_final_snp.filtered.{ind,eigenstratgeno}, snp file is unfiltered NB_final_snp.snp
+  panel_B_720:
+    dir: /home/scratch/yinmt202607/db/6.7M_720
+    prefix: asn720.6m
+    filtered_suffix: .filtered
+    # Confirmed against file_path.md: asn720.6m.filtered.{ind,geno} -- this
+    # panel's genotype file is named .geno, not .eigenstratgeno like panel
+    # A/C. Absent for panel A/C, where the extension is .eigenstratgeno.
+    geno_ext: .geno
+  panel_C_civan:
+    dir: /home/scratch/yinmt202607/db/paper1
+    prefix: civan_snp
+    filtered_suffix: .filtered
+  ancient_bam_dir: /home/scratch/yinmt202607/gene/results/ecotype_pca/bam_irgsp
+  # BLOCKED as of 2026-08-14: no capture bait BED has been found anywhere in
+  # the repo (all 4 branches searched) or in any server path documented so
+  # far. Capture-track work (CAPTURE.TV / CAPTURE.ALL for all three panels)
+  # cannot start until this is filled in and confirmed to exist on the
+  # server. Do not guess a path here. See 00_validate_inputs.py's BLOCKED
+  # report for the exact check.
+  capture_bait_bed: null
+  # Added 2026-08-17: the IRGSP reference FASTA the ancient BAMs
+  # (*.besthit_oryza.irgsp.bam) were mapped against, confirmed from
+  # scripts/server_originals/mapping.sh's own REF= line (not guessed).
+  # Used by 23_validate_snp_ref_against_fasta.py to check that each panel's
+  # declared REF allele actually matches the reference genome sequence.
+  irgsp_reference_fasta: /home/scratch/yinmt202607/db/asian_rice_panel_index/irgsp.fa
+
+results_v2_root: /home/scratch/yinmt202607/gene/results/ecotype_pca_v2

@@ -1,0 +1,5 @@
+# macOS resource forks (exFAT/SSD volumes)
+._*
+.DS_Store
+__pycache__/
+*.pyc

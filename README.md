@@ -59,3 +59,10 @@ export PILEUP_CALLER=~/software/pileupCaller-linux   # v1.5.3.1（1.6 会 segfau
 
 > 当前 v1 只含「共享轴投影」主链（S0–S11）。私有轴（per-sample 子集）暂未纳入。
 > 脚本保留 rice（chr01/irgsp）命名，其它物种需改 `--contig-format` 与 FASTA。
+
+## panel
+bam:通过网盘分享的文件：ancient_bams_16.tar.gz
+链接: https://pan.baidu.com/s/1pYVcynlZCiAVCsaVK-f3Hw 提取码: p3m4 
+--来自百度网盘超级会员v5的分享
+panel:
+

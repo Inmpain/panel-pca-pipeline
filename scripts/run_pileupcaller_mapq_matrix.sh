@@ -14,19 +14,22 @@ set -euo pipefail
 usage() {
   cat <<EOF
 usage: $0 --bfile MARKER_PLINK --samples LIST --bam-dir DIR --ref-fasta FASTA \\
-          --out-dir DIR [--mapq '0 20 25 30'] [--baseq 30] [--seed 0]
+          --out-dir DIR [--mapq '0 20 25 30'] [--baseq 30] [--seed 0] \\
+          [--bam-suffix .besthit_oryza.irgsp.bam]
 
-  --samples   space-separated ancient sample IDs (no .bam suffix)
-  --bam-dir   dir of *.besthit_oryza.irgsp.bam
-  --mapq      space-separated minMapQ sweep (default "0 20 25 30")
-  --baseq     fixed minBaseQ (default 30)
-  --seed      stable pileupCaller --seed (default 0); same across q so q is the
-              only varying factor per sample
+  --samples    space-separated ancient sample IDs (no .bam suffix)
+  --bam-dir    dir of SAMPLE<bam-suffix>.bam
+  --bam-suffix BAM 文件后缀（默认 .besthit_oryza.irgsp.bam；nanzuo 用 .dedup.bam）
+  --mapq       space-separated minMapQ sweep (default "0 20 25 30")
+  --baseq      fixed minBaseQ (default 30)
+  --seed       stable pileupCaller --seed (default 0); same across q so q is the
+               only varying factor per sample
 output: OUT/q<N>/SAMPLE.calls.txt + pileupCaller PLINK + per-call stderr
 EOF
 }
 
 BFILE=""; SAMPLES=""; BAMDIR=""; REF=""; OUT=""; MAPQ_LIST="0 20 25 30"; BASEQ=30; SEED=0
+BAM_SUFFIX=".besthit_oryza.irgsp.bam"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --bfile) BFILE="$2"; shift 2 ;;
@@ -37,6 +40,7 @@ while [[ $# -gt 0 ]]; do
     --mapq) MAPQ_LIST="$2"; shift 2 ;;
     --baseq) BASEQ="$2"; shift 2 ;;
     --seed) SEED="$2"; shift 2 ;;
+    --bam-suffix) BAM_SUFFIX="$2"; shift 2 ;;
     *) usage; exit 2 ;;
   esac
 done
@@ -50,7 +54,7 @@ mkdir -p "$OUT"
 
 for q in $MAPQ_LIST; do
   for S in $SAMPLES; do
-    BAM="$BAMDIR/$S.besthit_oryza.irgsp.bam"
+    BAM="$BAMDIR/$S$BAM_SUFFIX"
     [[ -s "$BAM" ]] || { echo "SKIP $S q=$q (no BAM: $BAM)" >&2; continue; }
     echo "=== $S mapq=$q baseq=$BASEQ ==="
     "$SCRIPT_DIR/pileupcaller_shared_call.sh" \

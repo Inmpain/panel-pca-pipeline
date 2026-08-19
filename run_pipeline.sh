@@ -18,6 +18,7 @@ die(){ echo "FATAL: $*" >&2; exit 1; }
 
 # --- 参数解析 ---
 CONFIG="config/config.yaml"; STAGE=""; SAMPLES=""; PANEL_LETTER="B"; PANEL_LABEL="720"
+BAM_SUFFIX=".besthit_oryza.irgsp.bam"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --config) CONFIG="$2"; shift 2 ;;
@@ -25,6 +26,7 @@ while [[ $# -gt 0 ]]; do
     --samples) SAMPLES="$2"; shift 2 ;;
     --panel-letter) PANEL_LETTER="$2"; shift 2 ;;
     --panel-label)  PANEL_LABEL="$2";  shift 2 ;;
+    --bam-suffix) BAM_SUFFIX="$2"; shift 2 ;;
     *) die "unknown arg: $1" ;;
   esac
 done
@@ -71,7 +73,7 @@ run_stage(){
     S3) die "S3（07 MAF/geno）依赖 S1 锁 A2 bfile，请在 FLOW.md 照抄执行" ;;
     S4) python3 "$SCRIPTS/19_survey_ancient_coverage.py" \
           --config "$CONFIG" --panel-snp "$PANEL_SNP" \
-          --bam $(for s in $SAMPLES; do printf -- '--bam %s=%s ' "$s" "$BAMDIR/$s.besthit_oryza.irgsp.bam"; done) \
+          --bam $(for s in $SAMPLES; do printf -- '--bam %s=%s ' "$s" "$BAMDIR/$s$BAM_SUFFIX"; done) \
           --core-min-samples 1 --out-dir "$RES/coverage" ;;
     *) die "stage $s 未实现于本模板（见 FLOW.md）" ;;
   esac

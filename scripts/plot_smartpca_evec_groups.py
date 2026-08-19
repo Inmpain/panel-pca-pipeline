@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Plot a smartpca .evec/.eval pair, coloring ancient samples by group (e.g.
-angkor vs nanzuo) with a shared legend, suptitle, and a 2x3 subplot grid.
+angkor vs nanzuo), output both a static PNG (matplotlib) and an interactive
+HTML (plotly).
 
 Modern samples are semi-transparent and colored by population label. Ancient
 samples are drawn as larger solid circles (or hollow triangles for
---lowconf-samples) colored by their group, standing out against the modern
-background. Text labels are OFF by default (they clutter); enable with
---label-ancient (all) or --label-lowconf (only low-confidence samples).
+--lowconf-samples) colored by their group. Static PNG labels are OFF by default;
+the plotly HTML has no text labels either, but hovering a point shows its
+sample ID, group/label, and the PC coordinate values.
 
 --ancient-meta is a 3-column TSV: sample_id<TAB>group<TAB>label
   e.g.
@@ -14,6 +15,7 @@ background. Text labels are OFF by default (they clutter); enable with
     YWL1-A3483<TAB>nanzuo<TAB>YWL1-A3483
 """
 import argparse
+import sys
 from collections import defaultdict
 
 
@@ -31,9 +33,11 @@ def parse_args():
     ap.add_argument("--lowconf-samples", default="",
                     help="comma-separated ancient IDs drawn as hollow triangles")
     ap.add_argument("--label-ancient", action="store_true",
-                    help="label every ancient sample (default off)")
+                    help="label every ancient sample in the PNG (default off)")
     ap.add_argument("--label-lowconf", action="store_true",
-                    help="label only low-confidence ancient samples (default off)")
+                    help="label only low-confidence ancient samples in the PNG (default off)")
+    ap.add_argument("--no-html", action="store_true",
+                    help="skip the plotly HTML export")
     ap.add_argument("--modern-alpha", type=float, default=0.45)
     ap.add_argument("--modern-size", type=float, default=12.0)
     return ap.parse_args()
@@ -80,6 +84,75 @@ def load_meta(path):
     return meta
 
 
+def export_html(args, evals, total, by_lab, ancient, groups, group_cmap, labs,
+                npairs, ncols, nrows):
+    """Write a plotly HTML with hover tooltips (ID / group / PC values)."""
+    try:
+        import matplotlib
+        import matplotlib.colors as mcolors
+        import plotly.graph_objects as go
+        from plotly.subplots import make_subplots
+    except ImportError:
+        print("WARNING: plotly (or matplotlib) not installed, skipping HTML export",
+              file=sys.stderr)
+        return
+
+    cmap = matplotlib.cm.get_cmap("tab20")
+    lab_color = {lab: mcolors.to_hex(cmap(i % 20)) for i, lab in enumerate(labs)}
+    group_color = {g: mcolors.to_hex(group_cmap[g]) for g in groups}
+
+    subtitles = [f"PC{2 * pi + 1} vs PC{2 * pi + 2}" for pi in range(npairs)]
+    subtitles += [""] * (nrows * ncols - npairs)
+    fig = make_subplots(rows=nrows, cols=ncols, subplot_titles=subtitles)
+
+    for pi in range(npairs):
+        xi, yi = 2 * pi, 2 * pi + 1
+        row, col = pi // ncols + 1, pi % ncols + 1
+        ht = (f"%{{customdata}}<br>PC{xi + 1}=%{{x:.4f}}<br>"
+              f"PC{yi + 1}=%{{y:.4f}}<extra></extra>")
+
+        for lab in labs:
+            xs = [v[xi] for _, v in by_lab[lab]]
+            ys = [v[yi] for _, v in by_lab[lab]]
+            cd = [f"{iid} ({lab})" for iid, _ in by_lab[lab]]
+            fig.add_trace(go.Scatter(
+                x=xs, y=ys, mode="markers", name=lab,
+                marker=dict(color=lab_color[lab], size=6, opacity=0.45),
+                customdata=cd, hovertemplate=ht,
+                showlegend=(pi == 0),
+            ), row=row, col=col)
+
+        for g in groups:
+            pts = [(iid, v, alabel, is_low)
+                   for iid, v, gg, alabel, is_low in ancient if gg == g]
+            xs = [v[xi] for _, v, _, _ in pts]
+            ys = [v[yi] for _, v, _, _ in pts]
+            cd = [f"{iid} · {alabel} · {g}" for iid, _, alabel, _ in pts]
+            sym = "triangle-up" if any(p[3] for p in pts) else "circle"
+            fig.add_trace(go.Scatter(
+                x=xs, y=ys, mode="markers", name=g,
+                marker=dict(color=group_color[g], size=12, symbol=sym,
+                            line=dict(color="black", width=1.4)),
+                customdata=cd, hovertemplate=ht,
+                showlegend=(pi == 0),
+            ), row=row, col=col)
+
+        fig.update_xaxes(title_text=f"PC{xi + 1} ({evals[xi] / total * 100:.2f}%)",
+                         row=row, col=col)
+        fig.update_yaxes(title_text=f"PC{yi + 1} ({evals[yi] / total * 100:.2f}%)",
+                         row=row, col=col)
+
+    fig.update_layout(
+        title=f"{args.title} | markers={args.nmarkers}",
+        height=520 * nrows, width=680 * ncols,
+        legend=dict(font=dict(size=11)),
+        hovermode="closest",
+    )
+    html_out = f"{args.out_prefix}.html"
+    fig.write_html(html_out)
+    print(f"wrote {html_out}")
+
+
 def main():
     args = parse_args()
     import matplotlib
@@ -113,7 +186,6 @@ def main():
     cmap = plt.get_cmap("tab20")
     labs = sorted(by_lab)
 
-    # --- legend handles: modern populations + ancient groups ---
     handles, labels = [], []
     for li, lab in enumerate(labs):
         handles.append(plt.Line2D([0], [0], marker="o", color="none",
@@ -151,11 +223,9 @@ def main():
         ax.set_ylabel(f"PC{yi + 1} ({evals[yi] / total * 100:.2f}%)", fontsize=10)
         ax.set_title(f"PC{xi + 1} vs PC{yi + 1}", fontsize=11)
 
-    # hide any unused cells (the 6th in a 2x3 grid)
     for pi in range(npairs, nrows * ncols):
         axes[pi // ncols][pi % ncols].axis("off")
 
-    # de-overlap labels only if any are drawn
     if args.label_ancient or args.label_lowconf:
         try:
             from adjustText import adjust_text
@@ -175,6 +245,10 @@ def main():
     out = f"{args.out_prefix}.png"
     fig.savefig(out, dpi=150, bbox_inches="tight")
     print(f"wrote {out}")
+
+    if not args.no_html:
+        export_html(args, evals, total, by_lab, ancient, groups, group_cmap,
+                    labs, npairs, ncols, nrows)
 
 
 if __name__ == "__main__":

@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """Plot a smartpca .evec/.eval pair, coloring ancient samples by group (e.g.
-angkor vs nanzuo) and labeling them from a --ancient-meta file.
+angkor vs nanzuo) with a shared legend, suptitle, and a 2x3 subplot grid.
 
-Modern samples stay colored by population label (semi-transparent). Ancient
-samples are drawn as solid filled circles colored by their group, with a text
-label per sample. Low-confidence samples (--lowconf-samples) are drawn as
-hollow triangles.
+Modern samples are semi-transparent and colored by population label. Ancient
+samples are drawn as larger solid circles (or hollow triangles for
+--lowconf-samples) colored by their group, standing out against the modern
+background. Text labels are OFF by default (they clutter); enable with
+--label-ancient (all) or --label-lowconf (only low-confidence samples).
 
 --ancient-meta is a 3-column TSV: sample_id<TAB>group<TAB>label
   e.g.
-    LV7008416379<TAB>angkor<TAB>80cm_1200AD
+    LV7008416379<TAB>angkor<TAB>53_1709
     YWL1-A3483<TAB>nanzuo<TAB>YWL1-A3483
 """
 import argparse
@@ -29,7 +30,11 @@ def parse_args():
                     help="TSV: sample_id<TAB>group<TAB>label (one ancient per line)")
     ap.add_argument("--lowconf-samples", default="",
                     help="comma-separated ancient IDs drawn as hollow triangles")
-    ap.add_argument("--modern-alpha", type=float, default=0.5)
+    ap.add_argument("--label-ancient", action="store_true",
+                    help="label every ancient sample (default off)")
+    ap.add_argument("--label-lowconf", action="store_true",
+                    help="label only low-confidence ancient samples (default off)")
+    ap.add_argument("--modern-alpha", type=float, default=0.45)
     ap.add_argument("--modern-size", type=float, default=12.0)
     return ap.parse_args()
 
@@ -102,26 +107,28 @@ def main():
     group_cmap = {g: plt.get_cmap("tab10")(i % 10) for i, g in enumerate(groups)}
 
     npairs = min(5, npc // 2)
-    fig, axes = plt.subplots(1, npairs, figsize=(6.8 * npairs, 5.9), squeeze=False)
+    ncols, nrows = 3, 2  # 5 pairs in a 2x3 grid
+    fig, axes = plt.subplots(nrows, ncols, figsize=(6.0 * ncols, 5.0 * nrows),
+                             squeeze=False)
     cmap = plt.get_cmap("tab20")
     labs = sorted(by_lab)
 
-    # legend: modern populations + ancient groups
+    # --- legend handles: modern populations + ancient groups ---
     handles, labels = [], []
     for li, lab in enumerate(labs):
         handles.append(plt.Line2D([0], [0], marker="o", color="none",
                                   markerfacecolor=cmap(li % 20), markeredgecolor="none",
-                                  markersize=6, alpha=args.modern_alpha))
+                                  markersize=8, alpha=args.modern_alpha))
         labels.append(lab)
     for g in groups:
         handles.append(plt.Line2D([0], [0], marker="o", color="none",
-                                  markerfacecolor=group_cmap[g], markeredgecolor="none",
-                                  markersize=7))
+                                  markerfacecolor=group_cmap[g], markeredgecolor="black",
+                                  markersize=10, markeredgewidth=1.3))
         labels.append(g)
 
     panel_texts = [[] for _ in range(npairs)]
     for pi in range(npairs):
-        ax = axes[0][pi]
+        ax = axes[pi // ncols][pi % ncols]
         xi, yi = 2 * pi, 2 * pi + 1
         for li, lab in enumerate(labs):
             xs = [v[xi] for _, v in by_lab[lab]]
@@ -130,30 +137,41 @@ def main():
                        alpha=args.modern_alpha, linewidths=0, zorder=1)
         for iid, v, g, alabel, is_low in ancient:
             if is_low:
-                ax.scatter(v[xi], v[yi], s=42, marker="^", facecolor="none",
-                           edgecolor=group_cmap[g], linewidth=1.4, zorder=4)
+                ax.scatter(v[xi], v[yi], s=110, marker="^", facecolor="none",
+                           edgecolor=group_cmap[g], linewidth=2.2, zorder=4)
             else:
-                ax.scatter(v[xi], v[yi], s=42, marker="o", color=group_cmap[g],
-                           edgecolor="black", linewidth=0.5, zorder=3)
-            t = ax.annotate(alabel, (v[xi], v[yi]), textcoords="offset points",
-                            xytext=(4, 4), fontsize=6, fontweight="bold", zorder=5)
-            panel_texts[pi].append(t)
-        ax.set_xlabel(f"PC{xi + 1} ({evals[xi] / total * 100:.2f}%)")
-        ax.set_ylabel(f"PC{yi + 1} ({evals[yi] / total * 100:.2f}%)")
-        ax.set_title(f"{args.title} | markers={args.nmarkers}")
+                ax.scatter(v[xi], v[yi], s=80, marker="o", color=group_cmap[g],
+                           edgecolor="black", linewidth=1.3, zorder=3)
+            do_label = args.label_ancient or (is_low and args.label_lowconf)
+            if do_label:
+                t = ax.annotate(alabel, (v[xi], v[yi]), textcoords="offset points",
+                                xytext=(5, 5), fontsize=7, fontweight="bold", zorder=5)
+                panel_texts[pi].append(t)
+        ax.set_xlabel(f"PC{xi + 1} ({evals[xi] / total * 100:.2f}%)", fontsize=10)
+        ax.set_ylabel(f"PC{yi + 1} ({evals[yi] / total * 100:.2f}%)", fontsize=10)
+        ax.set_title(f"PC{xi + 1} vs PC{yi + 1}", fontsize=11)
 
-    try:
-        from adjustText import adjust_text
-    except ImportError:
-        adjust_text = None
-    if adjust_text is not None:
-        for pi in range(npairs):
-            if panel_texts[pi]:
-                adjust_text(panel_texts[pi], ax=axes[0][pi], expand=(1.2, 1.4))
+    # hide any unused cells (the 6th in a 2x3 grid)
+    for pi in range(npairs, nrows * ncols):
+        axes[pi // ncols][pi % ncols].axis("off")
 
+    # de-overlap labels only if any are drawn
+    if args.label_ancient or args.label_lowconf:
+        try:
+            from adjustText import adjust_text
+        except ImportError:
+            adjust_text = None
+        if adjust_text is not None:
+            for pi in range(npairs):
+                if panel_texts[pi]:
+                    adjust_text(panel_texts[pi], ax=axes[pi // ncols][pi % ncols],
+                                expand=(1.2, 1.4))
+
+    fig.suptitle(f"{args.title} | markers={args.nmarkers}", fontsize=14, y=0.995)
     fig.legend(handles=handles, labels=labels, loc="center left",
-               bbox_to_anchor=(1.02, 0.5), fontsize=7, markerscale=1.2)
-    fig.tight_layout(rect=[0, 0, 0.86, 1])
+               bbox_to_anchor=(1.02, 0.5), fontsize=9, markerscale=1.4,
+               frameon=False)
+    fig.tight_layout(rect=[0, 0, 0.85, 0.95])
     out = f"{args.out_prefix}.png"
     fig.savefig(out, dpi=150, bbox_inches="tight")
     print(f"wrote {out}")

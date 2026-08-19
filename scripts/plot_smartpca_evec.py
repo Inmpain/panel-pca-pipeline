@@ -11,6 +11,7 @@ Axis labels show per-PC explained variance; the title shows the marker count.
 """
 
 import argparse
+import sys
 from collections import defaultdict
 
 
@@ -71,6 +72,11 @@ def main():
     total = sum(evals) or 1.0
     rows = load_evec(args.evec)
     npc = len(rows[0][1])
+    if len(evals) <= npc:
+        print(f"WARNING: {args.eval} has only {len(evals)} eigenvalues (<= {npc} PCs). "
+              f"PC% is normalized over the top-{len(evals)} only and will be inflated. "
+              f"smartpca .eval should contain the FULL spectrum (sum = n_samples - 1).",
+              file=sys.stderr)
 
     by_lab = defaultdict(list)
     ancient = []

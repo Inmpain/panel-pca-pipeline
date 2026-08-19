@@ -3,16 +3,16 @@
 angkor vs nanzuo), output both a static PNG (matplotlib 2x3 overview) and an
 interactive single-panel HTML (plotly).
 
-HTML design: ONE large panel at a time with a dropdown menu to switch between
-PC pairs (PC1-2 .. PC9-10). Modern samples are low-opacity background; ancient
-samples are high-saturation larger markers; per-group depth/order arrow chains
-(deep/old -> shallow/new) are semi-transparent. Hover shows ID/group/PC values.
-Plotly zoom + pan let you separate very close points.
+HTML: one large panel at a time, dropdown switches PC pairs. A second dropdown
+toggles "arrows + depth labels": clicking it reveals per-group depth-ordered
+trajectory arrows (shortened so they don't pierce points) plus a depth text
+label next to each angkor triangle (e.g. "53cm"). Modern samples are low-opacity
+background; ancient samples are high-saturation larger markers.
 
 --ancient-meta is a TSV: sample_id<TAB>group<TAB>label[<TAB>order]
-  e.g.
-    LV7008416379<TAB>angkor<TAB>53_1709<TAB>53
-    YWL1-A3483<TAB>nanzuo<TAB>YWL1-A3483<TAB>3483
+  order = numeric ordering for arrows (descending = deep/old -> shallow/new).
+  Depth text is auto-derived when the label starts with "depth_age" (e.g. "53_1709"
+  -> "53cm"); otherwise no label.
 """
 import argparse
 import sys
@@ -91,8 +91,14 @@ def load_meta(path):
     return meta
 
 
+def depth_text(label):
+    """Auto depth label from 'depth_age' style labels ('53_1709' -> '53cm')."""
+    if label and label[0].isdigit() and "_" in label:
+        return label.split("_", 1)[0] + "cm"
+    return ""
+
+
 def pair_coords(by_lab, ancient, xi, yi):
-    """Return (xs_all, ys_all) for one PC pair across modern + ancient."""
     xs, ys = [], []
     for lab in by_lab:
         for _, v in by_lab[lab]:
@@ -116,8 +122,7 @@ def pct_limits(vals):
 
 def export_html(args, evals, total, by_lab, ancient, groups, group_cmap, labs,
                 npairs):
-    """Write a single-panel plotly HTML with a PC-pair dropdown, hover, and
-    per-group depth/order arrow chains."""
+    """Single-panel HTML: PC-pair dropdown + optional arrows/depth labels."""
     try:
         import matplotlib
         import matplotlib.colors as mcolors
@@ -138,6 +143,7 @@ def export_html(args, evals, total, by_lab, ancient, groups, group_cmap, labs,
 
     traces = []
     trace_pairs = []
+    trace_is_ancient = []
     annotations = []
     ann_pairs = []
 
@@ -152,37 +158,48 @@ def export_html(args, evals, total, by_lab, ancient, groups, group_cmap, labs,
             cd = [f"{iid} ({lab})" for iid, _ in by_lab[lab]]
             traces.append(go.Scatter(
                 x=xs, y=ys, mode="markers", name=lab,
-                marker=dict(color=lab_color[lab], size=6, opacity=0.25),
+                marker=dict(color=lab_color[lab], size=6, opacity=0.4),
                 customdata=cd, hovertemplate=ht, showlegend=True,
             ))
             trace_pairs.append(pi)
+            trace_is_ancient.append(False)
 
         for g in groups:
             pts = group_pts[g]
             xs = [p[2][xi] for p in pts]
             ys = [p[2][yi] for p in pts]
             cd = [f"{p[1]} · {p[3]} · {g}" for p in pts]
+            txt = [depth_text(p[3]) for p in pts]
             sym = "triangle-up" if any(p[4] for p in pts) else "circle"
             traces.append(go.Scatter(
                 x=xs, y=ys, mode="markers", name=g,
                 marker=dict(color=group_color[g], size=8, symbol=sym, opacity=0.9,
                             line=dict(color="black", width=0.8)),
                 customdata=cd, hovertemplate=ht, showlegend=True,
+                text=txt, textposition="top right",
+                textfont=dict(size=9, color="black"),
             ))
             trace_pairs.append(pi)
+            trace_is_ancient.append(True)
 
-        # arrows: descending order (deep/old -> shallow/new)
+        # arrows: descending order (deep/old -> shallow/new), shortened 8%
         for g in groups:
             ordered = sorted([p for p in group_pts[g] if p[0] is not None],
                              key=lambda t: t[0], reverse=True)
             for k in range(len(ordered) - 1):
                 tail = ordered[k][2]
                 head = ordered[k + 1][2]
+                dx = head[xi] - tail[xi]
+                dy = head[yi] - tail[yi]
+                sx = tail[xi] + 0.08 * dx
+                sy = tail[yi] + 0.08 * dy
+                ex = head[xi] - 0.08 * dx
+                ey = head[yi] - 0.08 * dy
                 annotations.append(dict(
-                    x=head[xi], y=head[yi], ax=tail[xi], ay=tail[yi],
+                    x=ex, y=ey, ax=sx, ay=sy,
                     xref="x", yref="y", axref="x", ayref="y",
-                    showarrow=True, arrowhead=2, arrowsize=1.0, arrowwidth=1.3,
-                    arrowcolor=group_color[g], opacity=0.5, visible=True,
+                    showarrow=True, arrowhead=2, arrowsize=1.1, arrowwidth=2.0,
+                    arrowcolor=group_color[g], opacity=0.8, visible=True,
                 ))
                 ann_pairs.append(pi)
 
@@ -190,40 +207,62 @@ def export_html(args, evals, total, by_lab, ancient, groups, group_cmap, labs,
     for t in traces:
         fig.add_trace(t)
 
-    # initial state: show first PC pair
+    n = len(traces)
     init_vis = [p == 0 for p in trace_pairs]
     for k, t in enumerate(fig.data):
         t.visible = init_vis[k]
-    init_anns = [dict(a, visible=(ap == 0)) for a, ap in zip(annotations, ann_pairs)]
-    fig.update_layout(annotations=init_anns)
+    fig.update_layout(annotations=[])  # no arrows by default
 
-    buttons = []
+    def mode_array(with_text):
+        out = []
+        for k, t in enumerate(traces):
+            if trace_is_ancient[k]:
+                out.append("markers+text" if with_text else "markers")
+            else:
+                out.append(t.mode)
+        return out
+
+    buttons_plain = []
+    buttons_arrow = []
     for pi in range(npairs):
         xi, yi = 2 * pi, 2 * pi + 1
         vis = [p == pi for p in trace_pairs]
-        anns = [dict(a, visible=(ap == pi)) for a, ap in zip(annotations, ann_pairs)]
+        anns = [dict(a) for a, ap in zip(annotations, ann_pairs) if ap == pi]
         xs_all, ys_all = pair_coords(by_lab, ancient, xi, yi)
-        buttons.append(dict(
-            label=f"PC{xi + 1} vs PC{yi + 1}", method="update",
-            args=[{"visible": vis},
-                  {"annotations": anns,
-                   "xaxis.title.text": f"PC{xi + 1} ({evals[xi] / total * 100:.2f}%)",
-                   "yaxis.title.text": f"PC{yi + 1} ({evals[yi] / total * 100:.2f}%)",
-                   "xaxis.range": pct_limits(xs_all),
-                   "yaxis.range": pct_limits(ys_all)}]))
+        layout = {
+            "xaxis.title.text": f"PC{xi + 1} ({evals[xi] / total * 100:.2f}%)",
+            "yaxis.title.text": f"PC{yi + 1} ({evals[yi] / total * 100:.2f}%)",
+            "xaxis.range": pct_limits(xs_all),
+            "yaxis.range": pct_limits(ys_all),
+        }
+        lbl = f"PC{xi + 1} vs PC{yi + 1}"
+        buttons_plain.append(dict(
+            label=lbl, method="update",
+            args=[{"visible": vis, "mode": mode_array(False)},
+                  {**layout, "annotations": [dict(a, visible=False) for a in anns]}]))
+        buttons_arrow.append(dict(
+            label=lbl, method="update",
+            args=[{"visible": vis, "mode": mode_array(True)},
+                  {**layout, "annotations": [dict(a, visible=True) for a in anns]}]))
 
     fig.update_layout(
         title=dict(text=f"{args.title} | markers={args.nmarkers}", font=dict(size=16)),
         height=820, width=1150,
-        updatemenus=[dict(
-            buttons=buttons, direction="down", showactive=True,
-            x=0.02, y=1.14, xanchor="left", yanchor="top",
-            font=dict(size=12), bgcolor="rgba(240,240,240,0.9)",
-            bordercolor="#ccc", borderwidth=1,
-        )],
+        updatemenus=[
+            dict(buttons=buttons_plain, direction="down", showactive=True,
+                 x=0.02, y=1.16, xanchor="left", yanchor="top",
+                 font=dict(size=12), bgcolor="rgba(240,240,240,0.9)",
+                 bordercolor="#ccc", borderwidth=1,
+                 pad=dict(r=6)),
+            dict(buttons=buttons_arrow, direction="down", showactive=True,
+                 x=0.16, y=1.16, xanchor="left", yanchor="top",
+                 font=dict(size=12), bgcolor="rgba(210,240,210,0.9)",
+                 bordercolor="#8c8", borderwidth=1,
+                 pad=dict(r=6)),
+        ],
         legend=dict(font=dict(size=12), x=1.02, y=1.0, xanchor="left", yanchor="top"),
         hovermode="closest",
-        margin=dict(l=70, r=220, t=90, b=60),
+        margin=dict(l=70, r=220, t=100, b=60),
     )
     html_out = f"{args.out_prefix}.html"
     fig.write_html(html_out)
@@ -257,7 +296,7 @@ def main():
     group_cmap = {g: plt.get_cmap("tab10")(i % 10) for i, g in enumerate(groups)}
 
     npairs = min(5, npc // 2)
-    ncols, nrows = 3, 2  # PNG overview: 5 pairs in a 2x3 grid
+    ncols, nrows = 3, 2
     fig, axes = plt.subplots(nrows, ncols, figsize=(6.0 * ncols, 5.0 * nrows),
                              squeeze=False)
     cmap = plt.get_cmap("tab20")

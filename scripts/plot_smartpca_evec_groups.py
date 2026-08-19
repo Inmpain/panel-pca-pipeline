@@ -37,7 +37,7 @@ def parse_args():
     ap.add_argument("--no-html", action="store_true",
                     help="skip the plotly HTML export")
     ap.add_argument("--modern-alpha", type=float, default=0.30)
-    ap.add_argument("--modern-size", type=float, default=12.0)
+    ap.add_argument("--modern-size", type=float, default=6.0)
     return ap.parse_args()
 
 
@@ -268,11 +268,11 @@ def main():
                        alpha=args.modern_alpha, linewidths=0, zorder=1)
         for iid, v, g, alabel, is_low, _order in ancient:
             if is_low:
-                ax.scatter(v[xi], v[yi], s=70, marker="^", facecolor="none",
-                           edgecolor=group_cmap[g], linewidth=1.4, zorder=4)
+                ax.scatter(v[xi], v[yi], s=48, marker="^", facecolor="none",
+                           edgecolor=group_cmap[g], linewidth=0.9, zorder=4)
             else:
-                ax.scatter(v[xi], v[yi], s=60, marker="o", color=group_cmap[g],
-                           edgecolor="black", linewidth=1.0, zorder=3)
+                ax.scatter(v[xi], v[yi], s=40, marker="o", color=group_cmap[g],
+                           edgecolor="black", linewidth=0.7, zorder=3)
             do_label = args.label_ancient or (is_low and args.label_lowconf)
             if do_label:
                 t = ax.annotate(alabel, (v[xi], v[yi]), textcoords="offset points",

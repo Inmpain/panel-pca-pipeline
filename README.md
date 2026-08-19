@@ -68,3 +68,8 @@ panel:通过网盘分享的文件：panel_720_data.tar.gz
 链接: https://pan.baidu.com/s/1i4e4v-OY1_JrBKQQbaKK6g 提取码: utws 
 --来自百度网盘超级会员v5的分享
 
+nanzuo_angkor_data_sharetowang:
+通过网盘分享的文件：merged_reads_angkor_nanzuo.tar
+链接: https://pan.baidu.com/s/15J0_zWc2pR_7XH_LSNmD5Q 提取码: 1xn7 
+--来自百度网盘超级会员v5的分享
+

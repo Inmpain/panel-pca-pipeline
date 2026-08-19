@@ -11,7 +11,13 @@
 | S6 骨架 | `08_make_5kb_thinned_markers.py` | geno_maf_filtered `.bim` | `*.paperlike_<kb>kb.fixed.snplist` |
 | S7 合并 | `union_snplists.sh` | backbone + covered | hybrid.snplist |
 | S8 抽 bfile | plink2/plink 命令 | hybrid.snplist + 全位点 bfile | hybrid.locked bfile |
-| S9 古样本调用 | `run_pileupcaller_mapq_matrix.sh`、`pileupcaller_shared_call.sh`、`pileupcaller_plink_to_calls.py`、`summarize_pseudohap_calls.py` | hybrid bfile + 古 BAM | `calls_matrix/q*/SAMPLE.calls.txt`、ancient_qc.tsv |
+| S9 古样本调用 | `run_pileupcaller_mapq_matrix.sh`、`sbatch_pileupcaller_array.sh`、`pileupcaller_shared_call.sh`、`pileupcaller_plink_to_calls.py`、`summarize_pseudohap_calls.py` | hybrid bfile + 古 BAM | `calls_matrix/q*/SAMPLE.calls.txt`、ancient_qc.tsv |
+
+> S9 并行版：大批量（数百样品 × 全 6.7M 位点）用 `sbatch_pileupcaller_array.sh` 以
+> SLURM 数组提交，376 样品一个任务一个；它把全 marker 的 `.snp`/`.sites.bed` 从 bfile
+> 只生成一次（`OUT/shared.snp`），任务经 `pileupcaller_shared_call.sh` 新增的
+> `--snp/--sites-bed` 复用，避免每样品重复生成 ~300GB 中间盘。串行小批量仍走
+> `run_pileupcaller_mapq_matrix.sh`。
 | S10 modern 诊断 | `29_convert_plink_to_eigenstrat.sh`、`14_run_fixed_smartpca.sh`、`plot_smartpca_evec.py` | hybrid bfile | 参考 EIGENSTRAT + `.modern.png` |
 | S11 投影 | `13_merge_ancients_fixed_panel.py`、`14_run_fixed_smartpca.sh`、`plot_smartpca_evec.py` | 参考 + calls | `.merged.*`、`.pca.evec/.eval`、投影图 |
 

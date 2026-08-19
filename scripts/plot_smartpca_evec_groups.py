@@ -1,22 +1,13 @@
 #!/usr/bin/env python3
 """Plot a smartpca .evec/.eval pair, coloring ancient samples by group (e.g.
-angkor vs nanzuo), output both a static PNG (matplotlib) and an interactive
-HTML (plotly).
+angkor vs nanzuo), output both a static PNG (matplotlib 2x3 overview) and an
+interactive single-panel HTML (plotly).
 
-Modern samples are semi-transparent and colored by population label. Ancient
-samples are drawn as larger solid circles (or hollow triangles for
---lowconf-samples) colored by their group. Static PNG labels are OFF by default;
-the plotly HTML has no text labels either, but hovering a point shows its
-sample ID, group/label, and the PC coordinate values.
-
-Optional: if --ancient-meta has a 4th column (order, numeric), the HTML draws a
-chain of arrows per group connecting samples in DESCENDING order (deep/old ->
-shallow/new). E.g. angkor order=Depth, nanzuo order=YWL number.
-
-Axis limits are set from the 1st-99th percentile of ALL points (modern +
-ancient) per PC pair, so a few extreme projection outliers cannot squash the
-visible structure. The full title goes in a suptitle; subplots are 2x3
-(PC1-2 .. PC9-10).
+HTML design: ONE large panel at a time with a dropdown menu to switch between
+PC pairs (PC1-2 .. PC9-10). Modern samples are low-opacity background; ancient
+samples are high-saturation larger markers; per-group depth/order arrow chains
+(deep/old -> shallow/new) are semi-transparent. Hover shows ID/group/PC values.
+Plotly zoom + pan let you separate very close points.
 
 --ancient-meta is a TSV: sample_id<TAB>group<TAB>label[<TAB>order]
   e.g.
@@ -47,8 +38,8 @@ def parse_args():
                     help="label only low-confidence ancient samples in the PNG (default off)")
     ap.add_argument("--no-html", action="store_true",
                     help="skip the plotly HTML export")
-    ap.add_argument("--modern-alpha", type=float, default=0.45)
-    ap.add_argument("--modern-size", type=float, default=14.0)
+    ap.add_argument("--modern-alpha", type=float, default=0.30)
+    ap.add_argument("--modern-size", type=float, default=12.0)
     return ap.parse_args()
 
 
@@ -124,13 +115,13 @@ def pct_limits(vals):
 
 
 def export_html(args, evals, total, by_lab, ancient, groups, group_cmap, labs,
-                npairs, ncols, nrows):
-    """Write a plotly HTML with hover tooltips + per-group depth/order arrows."""
+                npairs):
+    """Write a single-panel plotly HTML with a PC-pair dropdown, hover, and
+    per-group depth/order arrow chains."""
     try:
         import matplotlib
         import matplotlib.colors as mcolors
         import plotly.graph_objects as go
-        from plotly.subplots import make_subplots
     except ImportError:
         print("WARNING: plotly (or matplotlib) not installed, skipping HTML export",
               file=sys.stderr)
@@ -140,22 +131,18 @@ def export_html(args, evals, total, by_lab, ancient, groups, group_cmap, labs,
     lab_color = {lab: mcolors.to_hex(cmap(i % 20)) for i, lab in enumerate(labs)}
     group_color = {g: mcolors.to_hex(group_cmap[g]) for g in groups}
 
-    # group -> [(order, iid, vals, label, is_lowconf)]
     group_pts = {g: [] for g in groups}
     for iid, v, g, alabel, is_low, order in ancient:
         if g in group_pts:
             group_pts[g].append((order, iid, v, alabel, is_low))
 
-    subtitles = [f"PC{2 * pi + 1} vs PC{2 * pi + 2}" for pi in range(npairs)]
-    subtitles += [""] * (nrows * ncols - npairs)
-    fig = make_subplots(rows=nrows, cols=ncols, subplot_titles=subtitles)
+    traces = []
+    trace_pairs = []
+    annotations = []
+    ann_pairs = []
 
     for pi in range(npairs):
         xi, yi = 2 * pi, 2 * pi + 1
-        row, col = pi // ncols + 1, pi % ncols + 1
-        idx = (row - 1) * ncols + col
-        xref = "x" if idx == 1 else f"x{idx}"
-        yref = "y" if idx == 1 else f"y{idx}"
         ht = (f"%{{customdata}}<br>PC{xi + 1}=%{{x:.4f}}<br>"
               f"PC{yi + 1}=%{{y:.4f}}<extra></extra>")
 
@@ -163,12 +150,12 @@ def export_html(args, evals, total, by_lab, ancient, groups, group_cmap, labs,
             xs = [v[xi] for _, v in by_lab[lab]]
             ys = [v[yi] for _, v in by_lab[lab]]
             cd = [f"{iid} ({lab})" for iid, _ in by_lab[lab]]
-            fig.add_trace(go.Scatter(
+            traces.append(go.Scatter(
                 x=xs, y=ys, mode="markers", name=lab,
-                marker=dict(color=lab_color[lab], size=6, opacity=0.45),
-                customdata=cd, hovertemplate=ht,
-                showlegend=(pi == 0),
-            ), row=row, col=col)
+                marker=dict(color=lab_color[lab], size=6, opacity=0.25),
+                customdata=cd, hovertemplate=ht, showlegend=True,
+            ))
+            trace_pairs.append(pi)
 
         for g in groups:
             pts = group_pts[g]
@@ -176,41 +163,67 @@ def export_html(args, evals, total, by_lab, ancient, groups, group_cmap, labs,
             ys = [p[2][yi] for p in pts]
             cd = [f"{p[1]} · {p[3]} · {g}" for p in pts]
             sym = "triangle-up" if any(p[4] for p in pts) else "circle"
-            fig.add_trace(go.Scatter(
+            traces.append(go.Scatter(
                 x=xs, y=ys, mode="markers", name=g,
-                marker=dict(color=group_color[g], size=12, symbol=sym,
-                            line=dict(color="black", width=1.4)),
-                customdata=cd, hovertemplate=ht,
-                showlegend=(pi == 0),
-            ), row=row, col=col)
+                marker=dict(color=group_color[g], size=8, symbol=sym, opacity=0.9,
+                            line=dict(color="black", width=0.8)),
+                customdata=cd, hovertemplate=ht, showlegend=True,
+            ))
+            trace_pairs.append(pi)
 
-        # depth/order arrows: descending order (deep/old -> shallow/new)
+        # arrows: descending order (deep/old -> shallow/new)
         for g in groups:
             ordered = sorted([p for p in group_pts[g] if p[0] is not None],
                              key=lambda t: t[0], reverse=True)
-            if len(ordered) < 2:
-                continue
             for k in range(len(ordered) - 1):
-                tail = ordered[k][2]    # deep (tail)
-                head = ordered[k + 1][2]  # shallow (head)
-                fig.add_annotation(
+                tail = ordered[k][2]
+                head = ordered[k + 1][2]
+                annotations.append(dict(
                     x=head[xi], y=head[yi], ax=tail[xi], ay=tail[yi],
-                    xref=xref, yref=yref, axref=xref, ayref=yref,
-                    showarrow=True, arrowhead=2, arrowsize=1.1, arrowwidth=1.3,
-                    arrowcolor=group_color[g], opacity=0.7,
-                )
+                    xref="x", yref="y", axref="x", ayref="y",
+                    showarrow=True, arrowhead=2, arrowsize=1.0, arrowwidth=1.3,
+                    arrowcolor=group_color[g], opacity=0.5, visible=True,
+                ))
+                ann_pairs.append(pi)
 
+    fig = go.Figure()
+    for t in traces:
+        fig.add_trace(t)
+
+    # initial state: show first PC pair
+    init_vis = [p == 0 for p in trace_pairs]
+    for k, t in enumerate(fig.data):
+        t.visible = init_vis[k]
+    init_anns = [dict(a, visible=(ap == 0)) for a, ap in zip(annotations, ann_pairs)]
+    fig.update_layout(annotations=init_anns)
+
+    buttons = []
+    for pi in range(npairs):
+        xi, yi = 2 * pi, 2 * pi + 1
+        vis = [p == pi for p in trace_pairs]
+        anns = [dict(a, visible=(ap == pi)) for a, ap in zip(annotations, ann_pairs)]
         xs_all, ys_all = pair_coords(by_lab, ancient, xi, yi)
-        fig.update_xaxes(title_text=f"PC{xi + 1} ({evals[xi] / total * 100:.2f}%)",
-                         range=pct_limits(xs_all), row=row, col=col)
-        fig.update_yaxes(title_text=f"PC{yi + 1} ({evals[yi] / total * 100:.2f}%)",
-                         range=pct_limits(ys_all), row=row, col=col)
+        buttons.append(dict(
+            label=f"PC{xi + 1} vs PC{yi + 1}", method="update",
+            args=[{"visible": vis},
+                  {"annotations": anns,
+                   "xaxis.title.text": f"PC{xi + 1} ({evals[xi] / total * 100:.2f}%)",
+                   "yaxis.title.text": f"PC{yi + 1} ({evals[yi] / total * 100:.2f}%)",
+                   "xaxis.range": pct_limits(xs_all),
+                   "yaxis.range": pct_limits(ys_all)}]))
 
     fig.update_layout(
-        title=f"{args.title} | markers={args.nmarkers}",
-        height=520 * nrows, width=680 * ncols,
-        legend=dict(font=dict(size=11)),
+        title=dict(text=f"{args.title} | markers={args.nmarkers}", font=dict(size=16)),
+        height=820, width=1150,
+        updatemenus=[dict(
+            buttons=buttons, direction="down", showactive=True,
+            x=0.02, y=1.14, xanchor="left", yanchor="top",
+            font=dict(size=12), bgcolor="rgba(240,240,240,0.9)",
+            bordercolor="#ccc", borderwidth=1,
+        )],
+        legend=dict(font=dict(size=12), x=1.02, y=1.0, xanchor="left", yanchor="top"),
         hovermode="closest",
+        margin=dict(l=70, r=220, t=90, b=60),
     )
     html_out = f"{args.out_prefix}.html"
     fig.write_html(html_out)
@@ -244,7 +257,7 @@ def main():
     group_cmap = {g: plt.get_cmap("tab10")(i % 10) for i, g in enumerate(groups)}
 
     npairs = min(5, npc // 2)
-    ncols, nrows = 3, 2  # 5 pairs in a 2x3 grid
+    ncols, nrows = 3, 2  # PNG overview: 5 pairs in a 2x3 grid
     fig, axes = plt.subplots(nrows, ncols, figsize=(6.0 * ncols, 5.0 * nrows),
                              squeeze=False)
     cmap = plt.get_cmap("tab20")
@@ -259,7 +272,7 @@ def main():
     for g in groups:
         handles.append(plt.Line2D([0], [0], marker="o", color="none",
                                   markerfacecolor=group_cmap[g], markeredgecolor="black",
-                                  markersize=10, markeredgewidth=1.3))
+                                  markersize=10, markeredgewidth=1.0))
         labels.append(g)
 
     panel_texts = [[] for _ in range(npairs)]
@@ -273,11 +286,11 @@ def main():
                        alpha=args.modern_alpha, linewidths=0, zorder=1)
         for iid, v, g, alabel, is_low, _order in ancient:
             if is_low:
-                ax.scatter(v[xi], v[yi], s=110, marker="^", facecolor="none",
-                           edgecolor=group_cmap[g], linewidth=2.2, zorder=4)
+                ax.scatter(v[xi], v[yi], s=70, marker="^", facecolor="none",
+                           edgecolor=group_cmap[g], linewidth=1.4, zorder=4)
             else:
-                ax.scatter(v[xi], v[yi], s=90, marker="o", color=group_cmap[g],
-                           edgecolor="black", linewidth=1.3, zorder=3)
+                ax.scatter(v[xi], v[yi], s=60, marker="o", color=group_cmap[g],
+                           edgecolor="black", linewidth=1.0, zorder=3)
             do_label = args.label_ancient or (is_low and args.label_lowconf)
             if do_label:
                 t = ax.annotate(alabel, (v[xi], v[yi]), textcoords="offset points",
@@ -318,7 +331,7 @@ def main():
 
     if not args.no_html:
         export_html(args, evals, total, by_lab, ancient, groups, group_cmap,
-                    labs, npairs, ncols, nrows)
+                    labs, npairs)
 
 
 if __name__ == "__main__":

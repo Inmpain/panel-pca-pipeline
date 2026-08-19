@@ -9,15 +9,19 @@ samples are drawn as larger solid circles (or hollow triangles for
 the plotly HTML has no text labels either, but hovering a point shows its
 sample ID, group/label, and the PC coordinate values.
 
+Optional: if --ancient-meta has a 4th column (order, numeric), the HTML draws a
+chain of arrows per group connecting samples in DESCENDING order (deep/old ->
+shallow/new). E.g. angkor order=Depth, nanzuo order=YWL number.
+
 Axis limits are set from the 1st-99th percentile of ALL points (modern +
 ancient) per PC pair, so a few extreme projection outliers cannot squash the
 visible structure. The full title goes in a suptitle; subplots are 2x3
 (PC1-2 .. PC9-10).
 
---ancient-meta is a 3-column TSV: sample_id<TAB>group<TAB>label
+--ancient-meta is a TSV: sample_id<TAB>group<TAB>label[<TAB>order]
   e.g.
-    LV7008416379<TAB>angkor<TAB>53_1709
-    YWL1-A3483<TAB>nanzuo<TAB>YWL1-A3483
+    LV7008416379<TAB>angkor<TAB>53_1709<TAB>53
+    YWL1-A3483<TAB>nanzuo<TAB>YWL1-A3483<TAB>3483
 """
 import argparse
 import sys
@@ -34,7 +38,7 @@ def parse_args():
     ap.add_argument("--title", default="")
     ap.add_argument("--out-prefix", required=True)
     ap.add_argument("--ancient-meta", required=True,
-                    help="TSV: sample_id<TAB>group<TAB>label (one ancient per line)")
+                    help="TSV: sample_id<TAB>group<TAB>label[<TAB>order]")
     ap.add_argument("--lowconf-samples", default="",
                     help="comma-separated ancient IDs drawn as hollow triangles")
     ap.add_argument("--label-ancient", action="store_true",
@@ -75,6 +79,7 @@ def load_evec(path):
 
 
 def load_meta(path):
+    """Return {sample_id: (group, label, order_or_None)}."""
     meta = {}
     with open(path) as fh:
         for line in fh:
@@ -85,7 +90,13 @@ def load_meta(path):
             if len(f) < 3:
                 continue
             sid, group, label = f[0], f[1], f[2]
-            meta[sid] = (group, label)
+            order = None
+            if len(f) >= 4:
+                try:
+                    order = float(f[3])
+                except ValueError:
+                    order = None
+            meta[sid] = (group, label, order)
     return meta
 
 
@@ -96,7 +107,7 @@ def pair_coords(by_lab, ancient, xi, yi):
         for _, v in by_lab[lab]:
             xs.append(v[xi])
             ys.append(v[yi])
-    for _, v, _, _, _ in ancient:
+    for _, v, _, _, _, _ in ancient:
         xs.append(v[xi])
         ys.append(v[yi])
     return xs, ys
@@ -114,7 +125,7 @@ def pct_limits(vals):
 
 def export_html(args, evals, total, by_lab, ancient, groups, group_cmap, labs,
                 npairs, ncols, nrows):
-    """Write a plotly HTML with hover tooltips (ID / group / PC values)."""
+    """Write a plotly HTML with hover tooltips + per-group depth/order arrows."""
     try:
         import matplotlib
         import matplotlib.colors as mcolors
@@ -129,6 +140,12 @@ def export_html(args, evals, total, by_lab, ancient, groups, group_cmap, labs,
     lab_color = {lab: mcolors.to_hex(cmap(i % 20)) for i, lab in enumerate(labs)}
     group_color = {g: mcolors.to_hex(group_cmap[g]) for g in groups}
 
+    # group -> [(order, iid, vals, label, is_lowconf)]
+    group_pts = {g: [] for g in groups}
+    for iid, v, g, alabel, is_low, order in ancient:
+        if g in group_pts:
+            group_pts[g].append((order, iid, v, alabel, is_low))
+
     subtitles = [f"PC{2 * pi + 1} vs PC{2 * pi + 2}" for pi in range(npairs)]
     subtitles += [""] * (nrows * ncols - npairs)
     fig = make_subplots(rows=nrows, cols=ncols, subplot_titles=subtitles)
@@ -136,6 +153,9 @@ def export_html(args, evals, total, by_lab, ancient, groups, group_cmap, labs,
     for pi in range(npairs):
         xi, yi = 2 * pi, 2 * pi + 1
         row, col = pi // ncols + 1, pi % ncols + 1
+        idx = (row - 1) * ncols + col
+        xref = "x" if idx == 1 else f"x{idx}"
+        yref = "y" if idx == 1 else f"y{idx}"
         ht = (f"%{{customdata}}<br>PC{xi + 1}=%{{x:.4f}}<br>"
               f"PC{yi + 1}=%{{y:.4f}}<extra></extra>")
 
@@ -151,12 +171,11 @@ def export_html(args, evals, total, by_lab, ancient, groups, group_cmap, labs,
             ), row=row, col=col)
 
         for g in groups:
-            pts = [(iid, v, alabel, is_low)
-                   for iid, v, gg, alabel, is_low in ancient if gg == g]
-            xs = [v[xi] for _, v, _, _ in pts]
-            ys = [v[yi] for _, v, _, _ in pts]
-            cd = [f"{iid} · {alabel} · {g}" for iid, _, alabel, _ in pts]
-            sym = "triangle-up" if any(p[3] for p in pts) else "circle"
+            pts = group_pts[g]
+            xs = [p[2][xi] for p in pts]
+            ys = [p[2][yi] for p in pts]
+            cd = [f"{p[1]} · {p[3]} · {g}" for p in pts]
+            sym = "triangle-up" if any(p[4] for p in pts) else "circle"
             fig.add_trace(go.Scatter(
                 x=xs, y=ys, mode="markers", name=g,
                 marker=dict(color=group_color[g], size=12, symbol=sym,
@@ -164,6 +183,22 @@ def export_html(args, evals, total, by_lab, ancient, groups, group_cmap, labs,
                 customdata=cd, hovertemplate=ht,
                 showlegend=(pi == 0),
             ), row=row, col=col)
+
+        # depth/order arrows: descending order (deep/old -> shallow/new)
+        for g in groups:
+            ordered = sorted([p for p in group_pts[g] if p[0] is not None],
+                             key=lambda t: t[0], reverse=True)
+            if len(ordered) < 2:
+                continue
+            for k in range(len(ordered) - 1):
+                tail = ordered[k][2]    # deep (tail)
+                head = ordered[k + 1][2]  # shallow (head)
+                fig.add_annotation(
+                    x=head[xi], y=head[yi], ax=tail[xi], ay=tail[yi],
+                    xref=xref, yref=yref, axref=xref, ayref=yref,
+                    showarrow=True, arrowhead=2, arrowsize=1.1, arrowwidth=1.3,
+                    arrowcolor=group_color[g], opacity=0.7,
+                )
 
         xs_all, ys_all = pair_coords(by_lab, ancient, xi, yi)
         fig.update_xaxes(title_text=f"PC{xi + 1} ({evals[xi] / total * 100:.2f}%)",
@@ -197,15 +232,15 @@ def main():
     npc = len(rows[0][1])
 
     by_lab = defaultdict(list)
-    ancient = []  # (iid, vals, group, label, is_lowconf)
+    ancient = []  # (iid, vals, group, label, is_lowconf, order)
     for iid, vals, label in rows:
         if label == "Ancient":
-            group, alabel = meta.get(iid, ("?", iid))
-            ancient.append((iid, vals, group, alabel, iid in lowconf))
+            group, alabel, order = meta.get(iid, ("?", iid, None))
+            ancient.append((iid, vals, group, alabel, iid in lowconf, order))
         else:
             by_lab[label].append((iid, vals))
 
-    groups = sorted({g for _, _, g, _, _ in ancient})
+    groups = sorted({g for _, _, g, _, _, _ in ancient})
     group_cmap = {g: plt.get_cmap("tab10")(i % 10) for i, g in enumerate(groups)}
 
     npairs = min(5, npc // 2)
@@ -236,7 +271,7 @@ def main():
             ys = [v[yi] for _, v in by_lab[lab]]
             ax.scatter(xs, ys, s=args.modern_size, color=cmap(li % 20),
                        alpha=args.modern_alpha, linewidths=0, zorder=1)
-        for iid, v, g, alabel, is_low in ancient:
+        for iid, v, g, alabel, is_low, _order in ancient:
             if is_low:
                 ax.scatter(v[xi], v[yi], s=110, marker="^", facecolor="none",
                            edgecolor=group_cmap[g], linewidth=2.2, zorder=4)
@@ -249,7 +284,6 @@ def main():
                                 xytext=(5, 5), fontsize=7, fontweight="bold", zorder=5)
                 panel_texts[pi].append(t)
 
-        # 1st-99th percentile axis limits so outliers don't squash the view
         xs_all, ys_all = pair_coords(by_lab, ancient, xi, yi)
         ax.set_xlim(*pct_limits(xs_all))
         ax.set_ylim(*pct_limits(ys_all))

@@ -9,6 +9,11 @@ samples are drawn as larger solid circles (or hollow triangles for
 the plotly HTML has no text labels either, but hovering a point shows its
 sample ID, group/label, and the PC coordinate values.
 
+Axis limits are set from the 1st-99th percentile of ALL points (modern +
+ancient) per PC pair, so a few extreme projection outliers cannot squash the
+visible structure. The full title goes in a suptitle; subplots are 2x3
+(PC1-2 .. PC9-10).
+
 --ancient-meta is a 3-column TSV: sample_id<TAB>group<TAB>label
   e.g.
     LV7008416379<TAB>angkor<TAB>53_1709
@@ -39,7 +44,7 @@ def parse_args():
     ap.add_argument("--no-html", action="store_true",
                     help="skip the plotly HTML export")
     ap.add_argument("--modern-alpha", type=float, default=0.45)
-    ap.add_argument("--modern-size", type=float, default=12.0)
+    ap.add_argument("--modern-size", type=float, default=14.0)
     return ap.parse_args()
 
 
@@ -82,6 +87,29 @@ def load_meta(path):
             sid, group, label = f[0], f[1], f[2]
             meta[sid] = (group, label)
     return meta
+
+
+def pair_coords(by_lab, ancient, xi, yi):
+    """Return (xs_all, ys_all) for one PC pair across modern + ancient."""
+    xs, ys = [], []
+    for lab in by_lab:
+        for _, v in by_lab[lab]:
+            xs.append(v[xi])
+            ys.append(v[yi])
+    for _, v, _, _, _ in ancient:
+        xs.append(v[xi])
+        ys.append(v[yi])
+    return xs, ys
+
+
+def pct_limits(vals):
+    import numpy as np
+    a = np.asarray(vals, dtype=float)
+    lo, hi = np.nanpercentile(a, 1.0), np.nanpercentile(a, 99.0)
+    pad = (hi - lo) * 0.12
+    if not np.isfinite(pad) or pad <= 0:
+        pad = 1.0
+    return float(lo - pad), float(hi + pad)
 
 
 def export_html(args, evals, total, by_lab, ancient, groups, group_cmap, labs,
@@ -137,10 +165,11 @@ def export_html(args, evals, total, by_lab, ancient, groups, group_cmap, labs,
                 showlegend=(pi == 0),
             ), row=row, col=col)
 
+        xs_all, ys_all = pair_coords(by_lab, ancient, xi, yi)
         fig.update_xaxes(title_text=f"PC{xi + 1} ({evals[xi] / total * 100:.2f}%)",
-                         row=row, col=col)
+                         range=pct_limits(xs_all), row=row, col=col)
         fig.update_yaxes(title_text=f"PC{yi + 1} ({evals[yi] / total * 100:.2f}%)",
-                         row=row, col=col)
+                         range=pct_limits(ys_all), row=row, col=col)
 
     fig.update_layout(
         title=f"{args.title} | markers={args.nmarkers}",
@@ -212,13 +241,19 @@ def main():
                 ax.scatter(v[xi], v[yi], s=110, marker="^", facecolor="none",
                            edgecolor=group_cmap[g], linewidth=2.2, zorder=4)
             else:
-                ax.scatter(v[xi], v[yi], s=80, marker="o", color=group_cmap[g],
+                ax.scatter(v[xi], v[yi], s=90, marker="o", color=group_cmap[g],
                            edgecolor="black", linewidth=1.3, zorder=3)
             do_label = args.label_ancient or (is_low and args.label_lowconf)
             if do_label:
                 t = ax.annotate(alabel, (v[xi], v[yi]), textcoords="offset points",
                                 xytext=(5, 5), fontsize=7, fontweight="bold", zorder=5)
                 panel_texts[pi].append(t)
+
+        # 1st-99th percentile axis limits so outliers don't squash the view
+        xs_all, ys_all = pair_coords(by_lab, ancient, xi, yi)
+        ax.set_xlim(*pct_limits(xs_all))
+        ax.set_ylim(*pct_limits(ys_all))
+
         ax.set_xlabel(f"PC{xi + 1} ({evals[xi] / total * 100:.2f}%)", fontsize=10)
         ax.set_ylabel(f"PC{yi + 1} ({evals[yi] / total * 100:.2f}%)", fontsize=10)
         ax.set_title(f"PC{xi + 1} vs PC{yi + 1}", fontsize=11)
@@ -237,13 +272,14 @@ def main():
                     adjust_text(panel_texts[pi], ax=axes[pi // ncols][pi % ncols],
                                 expand=(1.2, 1.4))
 
-    fig.suptitle(f"{args.title} | markers={args.nmarkers}", fontsize=14, y=0.995)
+    fig.suptitle(f"{args.title} | markers={args.nmarkers}", fontsize=15,
+                 y=0.98, fontweight="bold")
     fig.legend(handles=handles, labels=labels, loc="center left",
                bbox_to_anchor=(1.02, 0.5), fontsize=9, markerscale=1.4,
                frameon=False)
-    fig.tight_layout(rect=[0, 0, 0.85, 0.95])
+    fig.tight_layout(rect=[0, 0, 0.85, 0.94])
     out = f"{args.out_prefix}.png"
-    fig.savefig(out, dpi=150, bbox_inches="tight")
+    fig.savefig(out, dpi=150, bbox_inches="tight", pad_inches=0.3)
     print(f"wrote {out}")
 
     if not args.no_html:

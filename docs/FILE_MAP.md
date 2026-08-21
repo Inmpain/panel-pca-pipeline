@@ -21,6 +21,13 @@
 | S10 modern 诊断 | `29_convert_plink_to_eigenstrat.sh`、`14_run_fixed_smartpca.sh`、`plot_smartpca_evec.py` | hybrid bfile | 参考 EIGENSTRAT + `.modern.png` |
 | S11 投影 | `13_merge_ancients_fixed_panel.py`、`14_run_fixed_smartpca.sh`、`plot_smartpca_evec.py` | 参考 + calls | `.merged.*`、`.pca.evec/.eval`、投影图 |
 
+| 交互面板 | `plot_angkor_dashboard.py` | `.evec`/`.eval` + 增强 440 meta | 单文件离线 HTML（4 视图）+ 静态 PNG |
+
+> `plot_angkor_dashboard.py`：angkor 古水稻交互式 PCA 面板。现代 718 灰底，古样本形状=岩芯、
+> 颜色=Age CE 连续色阶；4 个下拉视图（单岩芯隔离 / 年代滑块全景 / 100 年质心轨迹 /
+> QC 子库对照）+ PC1-vs-Age 曲线。meta 需含 `sample_id base_robot core site depth_cm
+> age_CE libtype besthit prep`。
+
 ## 依赖库
 
 | 文件 | 被谁 import |

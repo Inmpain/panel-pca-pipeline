@@ -2,34 +2,34 @@
 """Angkor rice aDNA interactive PCA dashboard (plotly, single-file offline HTML).
 
 Reads a smartpca .evec/.eval pair plus an enriched per-sample metadata TSV and
-renders one interactive HTML with 4 dropdown views plus static PNG/PDF exports.
+renders one interactive HTML with multiple dropdown views plus static PNG/PDF.
 
 Visual encoding
 ---------------
-- Modern reference (718): uniform light-grey semi-transparent background.
+- Modern reference: colored BY POPULATION (label from .evec), low opacity,
+  small markers, acting as a background coordinate reference.
 - Ancient samples:
-    * SHAPE = core (field_sample_id): CAM2509=circle, CAM23-13=square,
-      CAM23-11=diamond, CAM22-08=triangle-up, CAM2201=x.
-    * COLOR = continuous Age CE (default 970-2021) via a Viridis colorscale.
-    * Hover: sample_id / core / site / depth_cm / age_CE / libtype / prep / besthit.
+    * SHAPE = core (CAM2509=circle, CAM23-13=square, CAM23-11=diamond,
+      CAM22-08=triangle-up, CAM2201=x).
+    * COLOR = continuous Age CE (Viridis) for dated cores; undated cores
+      (CAM22-08 / CAM2201) get their own solid colour.
+    * Hover: sample_id / core / site / depth / age / libtype / prep / besthit.
 
-Views (dropdown)
-----------------
-1. Per-core isolation : show one core, hide others.
-2. Panoramic + age slider : all cores, range slider on Age CE filters points.
-3. Trajectory : per-core centroid path over 100-yr windows (PC1-PC2 plane,
-   no-arrow polyline by default, optional arrow toggle) + PC-vs-Age curve.
-4. QC sub-library comparison : connect each base_robot's multi-lib points
-   (SG / C1 / C2 / BH / pooled) with dashed lines.
+Views (top horizontal dropdowns)
+--------------------------------
+- Panoramic (default): modern + all ancient age/undated points; trajectory and
+  QC traces hidden (legendonly).
+- Per-core isolation: pick one core.
+- QC benchmark: only the multi-library test samples prominent, others faded.
+- Trajectory: per-core 100-yr centroid polylines (toggle on).
 
-Static exports (if matplotlib available)
-----------------------------------------
-- {prefix}_panoramic.png, {prefix}_percore.png
+Static exports (matplotlib)
+---------------------------
+- {prefix}_panoramic.png, {prefix}_percore.png, {prefix}_pca1_age.png
 """
 import argparse
 import collections
 import sys
-from pathlib import Path
 
 
 def parse_args():
@@ -37,7 +37,7 @@ def parse_args():
     ap.add_argument("--evec", required=True)
     ap.add_argument("--eval", required=True)
     ap.add_argument("--meta", required=True,
-                    help="enriched 440 meta TSV: sample_id base_robot core site "
+                    help="enriched meta TSV: sample_id base_robot core site "
                          "depth_cm age_CE libtype besthit prep")
     ap.add_argument("--nmarkers", type=int, required=True)
     ap.add_argument("--title", default="angkor full6M (q25)")
@@ -88,6 +88,8 @@ CORE_SYMBOL = {
     "CAM22-08": "triangle-up", "CAM2201": "x",
 }
 CORE_ORDER = ["CAM2509", "CAM23-13", "CAM23-11", "CAM22-08", "CAM2201"]
+# solid colours for undated cores (avoid clashing with modern bg)
+UNDATED_COLOR = {"CAM22-08": "#e07b39", "CAM2201": "#c2185b"}
 
 
 def collect(args):
@@ -95,11 +97,10 @@ def collect(args):
     total = sum(evals) or 1.0
     meta = load_meta(args.meta)
     rows = load_evec(args.evec)
-    modern = [r for r in rows if r[2] != "Ancient"]
+    modern = [(r[0], r[1], r[2]) for r in rows if r[2] != "Ancient"]
     anc_rows = [r for r in rows if r[2] == "Ancient"]
 
     ancient = collections.defaultdict(list)
-    by_id = {}
     for iid, vals, _ in anc_rows:
         m = meta.get(iid, {})
         core = m.get("core", "?")
@@ -117,24 +118,25 @@ def collect(args):
                "age": age, "hover": hover, "base": m.get("base_robot", iid),
                "core": core, "libtype": m.get("libtype", "")}
         ancient[core].append(rec)
-        by_id[iid] = rec
-
     cores = [c for c in CORE_ORDER if c in ancient]
-    return evals, total, modern, ancient, by_id, cores
+    return evals, total, modern, ancient, cores
 
 
-def _trace_visible(base, per_core):
-    """visible list for the 2 main views: index0=modern, then per-core traces."""
-    return [base] + per_core
+def robust_range(vals):
+    import numpy as np
+    a = np.asarray(vals, dtype=float)
+    lo, hi = np.nanpercentile(a, 2.0), np.nanpercentile(a, 98.0)
+    pad = (hi - lo) * 0.08
+    if not np.isfinite(pad) or pad <= 0:
+        pad = 0.05
+    return float(lo - pad), float(hi + pad)
 
 
-def trajectory(ancient, core, age_min, age_max, bin=100):
-    """Return [(age_label, x_centroid, y_centroid)] for one core over 100-yr bins."""
+def trajectory(ancient, core, bin=100):
     pts = [p for p in ancient[core] if p["age"] is not None]
     bins = collections.defaultdict(list)
     for p in pts:
-        b = int(p["age"] // bin) * bin
-        bins[b].append(p)
+        bins[int(p["age"] // bin) * bin].append(p)
     out = []
     for b in sorted(bins):
         xs = [p["x"] for p in bins[b]]
@@ -146,171 +148,158 @@ def trajectory(ancient, core, age_min, age_max, bin=100):
 def build_html(args, evals, total, modern, ancient, cores):
     import plotly.graph_objects as go
 
-    # trace 0: modern background
-    traces = [go.Scatter(
-        x=[p[1][0] for p in modern], y=[p[1][1] for p in modern],
-        mode="markers", name="Modern (718)",
-        marker=dict(color="#C0C0C0", size=6, opacity=0.35), hoverinfo="skip",
-        showlegend=False)]
-    # core_trace_idx[core] = [colored_idx, gray_idx_or_None]
-    core_trace_idx = {}
+    # ---- modern traces: one per population (coloured), low opacity ----
+    pop_traces = []
+    pop_list = sorted({lab for _, _, lab in modern})
+    palette = ["#aec7e8", "#ffbb78", "#98df8a", "#ff9896", "#c5b0d5",
+               "#ffd8a2", "#98d8c8", "#f7b6d2", "#c7c7c7", "#9edae5",
+               "#dbdb8d", "#ff9f40", "#bcbd22", "#17becf", "#8c564b",
+               "#e377c2", "#7f7f7f", "#bcbd22", "#d62728", "#2ca02c"]
+    for i, lab in enumerate(pop_list):
+        xs = [r[1][0] for r in modern if r[2] == lab]
+        ys = [r[1][1] for r in modern if r[2] == lab]
+        pop_traces.append(go.Scatter(
+            x=xs, y=ys, mode="markers", name=lab,
+            marker=dict(color=palette[i % len(palette)], size=5, opacity=0.30,
+                        line=dict(width=0)), hoverinfo="skip", showlegend=True))
+    n_pop = len(pop_traces)
+
+    # ---- ancient traces: per core (age-coloured) + undated solid ----
+    ancient_traces = []
+    core_trace_idx = {}   # core -> list of trace indices for that core's age pts
+    undated_idx = {}      # core -> trace index (solid colour)
     for core in cores:
         pts = ancient[core]
-        if not pts:
-            continue
         aged = [p for p in pts if p["age"] is not None]
         noage = [p for p in pts if p["age"] is None]
         sym = CORE_SYMBOL.get(core, "circle")
-        # colored trace (age-present)
-        colored_idx = len(traces)
         if aged:
-            traces.append(go.Scatter(
+            core_trace_idx[core] = len(ancient_traces)
+            ancient_traces.append(go.Scatter(
                 x=[p["x"] for p in aged], y=[p["y"] for p in aged],
                 mode="markers", name=core,
                 marker=dict(size=9, symbol=sym,
                             color=[p["age"] for p in aged],
                             colorscale="Viridis", cmin=args.age_min, cmax=args.age_max,
-                            colorbar=dict(title="Age CE"),
-                            line=dict(width=0.5, color="black")),
+                            colorbar=dict(title="Age CE", x=1.02, xanchor="left"),
+                            line=dict(width=0.6, color="white")),
                 customdata=[p["hover"] for p in aged],
                 hovertemplate="%{customdata}<extra></extra>", showlegend=True))
         else:
-            colored_idx = None
-        # gray trace (age-missing), keeps no-age samples visible with core shape
-        gray_idx = None
+            core_trace_idx[core] = None
         if noage:
-            gray_idx = len(traces)
-            traces.append(go.Scatter(
+            col = UNDATED_COLOR.get(core, "#888888")
+            undated_idx[core] = len(ancient_traces)
+            ancient_traces.append(go.Scatter(
                 x=[p["x"] for p in noage], y=[p["y"] for p in noage],
-                mode="markers", name=f"{core} (no age)",
-                marker=dict(size=9, symbol=sym, color="#888888",
-                            line=dict(width=0.5, color="black")),
+                mode="markers", name=f"{core} (undated)",
+                marker=dict(size=9, symbol=sym, color=col,
+                            line=dict(width=0.6, color="white")),
                 customdata=[p["hover"] for p in noage],
                 hovertemplate="%{customdata}<extra></extra>", showlegend=True))
-        core_trace_idx[core] = [colored_idx, gray_idx]
-    n_core = len(core_trace_idx)
+    n_anc = len(ancient_traces)
 
-    # ---- view 3: trajectory traces (polyline through 100-yr centroids) ----
+    # ---- trajectory traces (legendonly by default) ----
     traj_traces = []
-    traj_core_idx = {}
     for core in cores:
-        tr = trajectory(ancient, core, args.age_min, args.age_max)
+        tr = trajectory(ancient, core)
         if len(tr) < 2:
             continue
-        xs = [p[1] for p in tr]
-        ys = [p[2] for p in tr]
-        labs = [p[0] for p in tr]
-        t = go.Scatter(
-            x=xs, y=ys, mode="lines+markers+text", name=f"{core} traj",
-            line=dict(color="black", width=2), marker=dict(size=9, color="red"),
-            text=labs, textposition="bottom right", textfont=dict(size=9),
-            hoverinfo="skip", showlegend=False)
-        traj_core_idx[core] = len(traces) + len(traj_traces)
-        traj_traces.append(t)
+        traj_traces.append(go.Scatter(
+            x=[p[1] for p in tr], y=[p[2] for p in tr],
+            mode="lines+markers", name=f"{core} traj",
+            line=dict(color="black", width=2), marker=dict(size=8, color="red"),
+            hoverinfo="skip", visible="legendonly", showlegend=True))
+    n_traj = len(traj_traces)
 
-    # ---- view 4: QC sub-library comparison traces ----
+    # ---- QC markers + lines (legendonly by default) ----
     libgroup = collections.defaultdict(list)
     for core in cores:
         for p in ancient[core]:
             if p["libtype"] in ("SG", "C1", "C2", "pooled_nobesthit", "pooled_besthit"):
                 libgroup[p["base"]].append(p)
-    qc_traces = []
     order = {"SG": 0, "C1": 1, "C2": 2, "pooled_nobesthit": 3, "pooled_besthit": 4}
+    qc_marker_traces = []
+    qc_line_traces = []
+    qc_bases = []
     for base, pts in libgroup.items():
         if len(pts) < 2:
             continue
         pts = sorted(pts, key=lambda p: order.get(p["libtype"], 9))
-        xs = [p["x"] for p in pts] + [pts[0]["x"]]
-        ys = [p["y"] for p in pts] + [pts[0]["y"]]
-        txt = [p["libtype"] for p in pts] + [pts[0]["libtype"]]
-        qc_traces.append(go.Scatter(
-            x=xs, y=ys, mode="lines+markers+text", name=f"{base} QC",
-            line=dict(color="rgba(0,0,0,0.6)", width=1, dash="dot"),
-            marker=dict(size=7, color="black"),
-            text=txt, textposition="top right", textfont=dict(size=8),
-            customdata=[p["hover"] for p in pts] + [pts[0]["hover"]],
+        qc_bases.append(base)
+        qc_marker_traces.append(go.Scatter(
+            x=[p["x"] for p in pts], y=[p["y"] for p in pts],
+            mode="markers", name=base, visible="legendonly",
+            marker=dict(size=11, color="black", symbol="circle",
+                        line=dict(color="white", width=1)),
+            customdata=[p["hover"] for p in pts],
             hovertemplate="%{customdata}<extra></extra>", showlegend=False))
+        qc_line_traces.append(go.Scatter(
+            x=[p["x"] for p in pts] + [pts[0]["x"]],
+            y=[p["y"] for p in pts] + [pts[0]["y"]],
+            mode="lines", name=f"{base} QC line", visible="legendonly",
+            line=dict(color="rgba(0,0,0,0.6)", width=1.5, dash="dot"),
+            hoverinfo="skip", showlegend=False))
+    n_qc_m = len(qc_marker_traces)
+    n_qc_l = len(qc_line_traces)
 
-    n_traj = len(traj_traces)
-    n_qc = len(qc_traces)
-    all_traces = traces + traj_traces + qc_traces
+    # combined trace layout:
+    # [pop_traces (n_pop)] [ancient_traces (n_anc)] [traj (n_traj)] [qc_m (n_qc_m)] [qc_l (n_qc_l)]
+    pop_vis = [True] * n_pop
+    anc_all = [1] * n_anc
 
-    # helper: visibility for a set of core trace indices
-    def core_mask(which_cores):
-        """list over all core traces (colored+gray) with 1 for cores in which_cores."""
-        m = []
-        for core in cores:
-            c, g = core_trace_idx.get(core, (None, None))
-            if c is not None:
-                m.append(1 if core in which_cores else 0)
-            if g is not None:
-                m.append(1 if core in which_cores else 0)
-        return m
-
-    all_core_mask = core_mask(set(cores))
-    n_core_traces = len(all_core_mask)
-
-    def full_vis(core_mask_list, traj_on, qc_on):
-        v = [True] + list(core_mask_list)
-        v += [1] * n_traj if traj_on else [0] * n_traj
-        v += [1] * n_qc if qc_on else [0] * n_qc
+    def vis(pop_on, anc, traj_on, qc_m_on, qc_l_on):
+        v = ([True] * n_pop if pop_on else [False] * n_pop)
+        v += ([1] * n_anc if anc else [0] * n_anc)
+        v += ([1] * n_traj if traj_on else [0] * n_traj)
+        v += ([1] * n_qc_m if qc_m_on else [0] * n_qc_m)
+        v += ([1] * n_qc_l if qc_l_on else [0] * n_qc_l)
         return v
 
-    # ---- view 1: per-core isolation ----
-    buttons1 = [dict(label="All cores", method="update",
-                     args=[{"visible": full_vis(all_core_mask, False, False)}])]
+    # ---- view buttons ----
+    # panoramic
+    b_pano = dict(label="Panoramic", method="update",
+                  args=[{"visible": vis(True, True, False, False, False)}])
+    # per-core isolation
+    core_buttons = [dict(label="All cores", method="update",
+                         args=[{"visible": vis(True, True, False, False, False)}])]
     for core in cores:
-        if core not in core_trace_idx:
-            continue
-        buttons1.append(dict(label=f"Core: {core}", method="update",
-                             args=[{"visible": full_vis(core_mask({core}), False, False)}]))
+        mask = [0] * n_anc
+        ci = core_trace_idx.get(core)
+        ui = undated_idx.get(core)
+        if ci is not None:
+            mask[ci] = 1
+        if ui is not None:
+            mask[ui] = 1
+        core_buttons.append(dict(label=f"Core: {core}", method="update",
+                                 args=[{"visible": vis(True, mask, False, False, False)}]))
+    # QC benchmark: modern + qc markers + qc lines, ancient dimmed
+    b_qc = dict(label="QC benchmark", method="update",
+                args=[{"visible": vis(True, False, False, True, True)}])
+    # trajectory
+    b_traj = dict(label="Trajectory", method="update",
+                  args=[{"visible": vis(True, True, True, False, False)}])
 
-    # ---- view 2: age slider (bin buttons) ----
-    age_buttons = [dict(label="All ages", method="update",
-                        args=[{"visible": full_vis(all_core_mask, False, False)}])]
-    for lo in range(int(args.age_min), int(args.age_max), 100):
-        hi = min(lo + 100, int(args.age_max))
-        vis = [True]
-        for core in cores:
-            c, g = core_trace_idx.get(core, (None, None))
-            a = [p["age"] for p in ancient[core] if p["age"] is not None]
-            if c is not None:
-                vis.append([1 if (lo <= v < hi) else 0 for v in a])
-            if g is not None:
-                vis.append(1)  # no-age points always visible
-        vis += [0] * n_traj + [0] * n_qc
-        age_buttons.append(dict(label=f"{lo}-{hi} CE", method="update",
-                                args=[{"visible": vis}]))
+    # ---- robust axis range ----
+    all_x = [p[1][0] for p in modern] + [p["x"] for c in cores for p in ancient[c]]
+    all_y = [p[1][1] for p in modern] + [p["y"] for c in cores for p in ancient[c]]
+    xr = robust_range(all_x)
+    yr = robust_range(all_y)
 
-    # ---- view 3: trajectory button ----
-    vis3 = full_vis(all_core_mask, True, False)
-    # ---- view 4: QC button ----
-    vis4 = full_vis(all_core_mask, False, True)
-
-    view_buttons = [
-        dict(label="Panoramic (all ages)", method="update",
-             args=[{"visible": full_vis(all_core_mask, False, False)}]),
-        dict(label="Trajectory (100-yr)", method="update", args=[{"visible": vis3}]),
-        dict(label="QC sub-library", method="update", args=[{"visible": vis4}]),
-    ]
-
+    all_traces = pop_traces + ancient_traces + traj_traces + qc_marker_traces + qc_line_traces
     fig = go.Figure(data=all_traces)
     fig.update_layout(
-        title=dict(text=f"{args.title} | markers={args.nmarkers}", font=dict(size=16)),
+        title=dict(text=f"{args.title} | markers={args.nmarkers}", font=dict(size=15)),
         hovermode="closest",
-        xaxis=dict(title=f"PC1 ({evals[0]/total*100:.2f}%)"),
-        yaxis=dict(title=f"PC2 ({evals[1]/total*100:.2f}%)"),
-        height=780, width=1050,
-        margin=dict(l=60, r=60, t=140, b=100),
+        xaxis=dict(title=f"PC1 ({evals[0]/total*100:.2f}%)", range=xr),
+        yaxis=dict(title=f"PC2 ({evals[1]/total*100:.2f}%)", range=yr),
+        height=720, width=1100,
+        margin=dict(l=60, r=70, t=90, b=60),
+        legend=dict(orientation="h", y=1.02, x=0, font=dict(size=10)),
         updatemenus=[
-            dict(buttons=view_buttons, direction="down", showactive=True,
-                 x=0.0, y=1.24, xanchor="left", yanchor="top",
-                 bgcolor="rgba(240,240,240,0.9)"),
-            dict(buttons=buttons1, direction="down", showactive=True,
-                 x=0.0, y=1.02, xanchor="left", yanchor="top",
-                 bgcolor="rgba(240,240,240,0.9)"),
-            dict(buttons=age_buttons, direction="up", showactive=True,
-                 x=1.0, y=-0.15, xanchor="right", yanchor="top",
+            dict(buttons=[b_pano, b_qc, b_traj] + core_buttons,
+                 direction="down", showactive=True,
+                 x=0.0, y=1.10, xanchor="left", yanchor="top",
                  bgcolor="rgba(240,240,240,0.9)"),
         ],
     )
@@ -325,9 +314,14 @@ def build_pngs(args, evals, total, modern, ancient, cores):
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
+    pops = sorted({r[2] for r in modern})
+    pop_color = {p: plt.get_cmap("tab20")(i % 20) for i, p in enumerate(pops)}
+
     def draw(ax, data):
-        ax.scatter([p[1][0] for p in modern], [p[1][1] for p in modern],
-                   s=8, color="#C0C0C0", alpha=0.35, linewidths=0)
+        for p in pops:
+            xs = [r[1][0] for r in modern if r[2] == p]
+            ys = [r[1][1] for r in modern if r[2] == p]
+            ax.scatter(xs, ys, s=8, color=pop_color[p], alpha=0.30, linewidths=0)
         for c, pts in data.items():
             aged = [p for p in pts if p["age"] is not None]
             noage = [p for p in pts if p["age"] is None]
@@ -335,15 +329,15 @@ def build_pngs(args, evals, total, modern, ancient, cores):
                 ax.scatter([p["x"] for p in aged], [p["y"] for p in aged],
                            c=[p["age"] for p in aged], cmap="viridis", s=40,
                            vmin=args.age_min, vmax=args.age_max,
-                           edgecolor="black", linewidth=0.5)
+                           edgecolor="white", linewidth=0.5)
             if noage:
+                col = UNDATED_COLOR.get(c, "#888888")
                 ax.scatter([p["x"] for p in noage], [p["y"] for p in noage],
-                           c="#888888", s=40, edgecolor="black", linewidth=0.5)
+                           c=col, s=40, edgecolor="white", linewidth=0.5)
         ax.set_xlabel(f"PC1 ({evals[0]/total*100:.1f}%)")
         ax.set_ylabel(f"PC2 ({evals[1]/total*100:.1f}%)")
 
-    # panoramic
-    fig, ax = plt.subplots(figsize=(8, 7))
+    fig, ax = plt.subplots(figsize=(9, 7))
     draw(ax, dict(ancient))
     sm = plt.cm.ScalarMappable(cmap="viridis",
                                norm=plt.Normalize(args.age_min, args.age_max))
@@ -354,7 +348,6 @@ def build_pngs(args, evals, total, modern, ancient, cores):
     fig.savefig(f"{args.out_prefix}_panoramic.png", dpi=150)
     print(f"wrote {args.out_prefix}_panoramic.png")
 
-    # per-core facets
     fig, axes = plt.subplots(1, len(cores), figsize=(6 * len(cores), 5.5))
     if len(cores) == 1:
         axes = [axes]
@@ -366,7 +359,6 @@ def build_pngs(args, evals, total, modern, ancient, cores):
     fig.savefig(f"{args.out_prefix}_percore.png", dpi=150)
     print(f"wrote {args.out_prefix}_percore.png")
 
-    # PC-vs-Age curve (PC1 per core over Age CE)
     fig, ax = plt.subplots(figsize=(9, 6))
     for core in cores:
         pts = [(p["age"], p["pc"][0]) for p in ancient.get(core, [])
@@ -387,7 +379,7 @@ def build_pngs(args, evals, total, modern, ancient, cores):
 
 def main():
     args = parse_args()
-    evals, total, modern, ancient, by_id, cores = collect(args)
+    evals, total, modern, ancient, cores = collect(args)
     build_html(args, evals, total, modern, ancient, cores)
     if not args.no_png:
         try:

@@ -152,23 +152,42 @@ def build_html(args, evals, total, modern, ancient, cores):
         mode="markers", name="Modern (718)",
         marker=dict(color="#C0C0C0", size=6, opacity=0.35), hoverinfo="skip",
         showlegend=False)]
+    # core_trace_idx[core] = [colored_idx, gray_idx_or_None]
     core_trace_idx = {}
     for core in cores:
         pts = ancient[core]
         if not pts:
             continue
-        tr = go.Scatter(
-            x=[p["x"] for p in pts], y=[p["y"] for p in pts], mode="markers",
-            name=core,
-            marker=dict(size=9, symbol=CORE_SYMBOL.get(core, "circle"),
-                        color=[p["age"] for p in pts],
-                        colorscale="Viridis", cmin=args.age_min, cmax=args.age_max,
-                        colorbar=dict(title="Age CE"),
-                        line=dict(width=0.5, color="black")),
-            customdata=[p["hover"] for p in pts],
-            hovertemplate="%{customdata}<extra></extra>", showlegend=True)
-        core_trace_idx[core] = len(traces)
-        traces.append(tr)
+        aged = [p for p in pts if p["age"] is not None]
+        noage = [p for p in pts if p["age"] is None]
+        sym = CORE_SYMBOL.get(core, "circle")
+        # colored trace (age-present)
+        colored_idx = len(traces)
+        if aged:
+            traces.append(go.Scatter(
+                x=[p["x"] for p in aged], y=[p["y"] for p in aged],
+                mode="markers", name=core,
+                marker=dict(size=9, symbol=sym,
+                            color=[p["age"] for p in aged],
+                            colorscale="Viridis", cmin=args.age_min, cmax=args.age_max,
+                            colorbar=dict(title="Age CE"),
+                            line=dict(width=0.5, color="black")),
+                customdata=[p["hover"] for p in aged],
+                hovertemplate="%{customdata}<extra></extra>", showlegend=True))
+        else:
+            colored_idx = None
+        # gray trace (age-missing), keeps no-age samples visible with core shape
+        gray_idx = None
+        if noage:
+            gray_idx = len(traces)
+            traces.append(go.Scatter(
+                x=[p["x"] for p in noage], y=[p["y"] for p in noage],
+                mode="markers", name=f"{core} (no age)",
+                marker=dict(size=9, symbol=sym, color="#888888",
+                            line=dict(width=0.5, color="black")),
+                customdata=[p["hover"] for p in noage],
+                hovertemplate="%{customdata}<extra></extra>", showlegend=True))
+        core_trace_idx[core] = [colored_idx, gray_idx]
     n_core = len(core_trace_idx)
 
     # ---- view 3: trajectory traces (polyline through 100-yr centroids) ----
@@ -216,42 +235,61 @@ def build_html(args, evals, total, modern, ancient, cores):
     n_qc = len(qc_traces)
     all_traces = traces + traj_traces + qc_traces
 
-    # visibility helpers (over all_traces)
-    core_vis = lambda mask: [True] + mask + [0] * n_traj + [0] * n_qc
-    qc_off = [0] * n_qc
+    # helper: visibility for a set of core trace indices
+    def core_mask(which_cores):
+        """list over all core traces (colored+gray) with 1 for cores in which_cores."""
+        m = []
+        for core in cores:
+            c, g = core_trace_idx.get(core, (None, None))
+            if c is not None:
+                m.append(1 if core in which_cores else 0)
+            if g is not None:
+                m.append(1 if core in which_cores else 0)
+        return m
+
+    all_core_mask = core_mask(set(cores))
+    n_core_traces = len(all_core_mask)
+
+    def full_vis(core_mask_list, traj_on, qc_on):
+        v = [True] + list(core_mask_list)
+        v += [1] * n_traj if traj_on else [0] * n_traj
+        v += [1] * n_qc if qc_on else [0] * n_qc
+        return v
 
     # ---- view 1: per-core isolation ----
     buttons1 = [dict(label="All cores", method="update",
-                     args=[{"visible": [True] + [1] * n_core + [0] * n_traj + qc_off}])]
+                     args=[{"visible": full_vis(all_core_mask, False, False)}])]
     for core in cores:
         if core not in core_trace_idx:
             continue
-        vis = [True] + [1 if c == core else 0 for c in cores] + [0] * n_traj + qc_off
         buttons1.append(dict(label=f"Core: {core}", method="update",
-                             args=[{"visible": vis}]))
+                             args=[{"visible": full_vis(core_mask({core}), False, False)}]))
 
     # ---- view 2: age slider (bin buttons) ----
     age_buttons = [dict(label="All ages", method="update",
-                        args=[{"visible": [True] + [1] * n_core + [0] * n_traj + qc_off}])]
+                        args=[{"visible": full_vis(all_core_mask, False, False)}])]
     for lo in range(int(args.age_min), int(args.age_max), 100):
         hi = min(lo + 100, int(args.age_max))
         vis = [True]
         for core in cores:
-            a = [p["age"] for p in ancient[core]]
-            vis.append([1 if (v is not None and lo <= v < hi) else 0 for v in a])
-        vis += [0] * n_traj + qc_off
+            c, g = core_trace_idx.get(core, (None, None))
+            a = [p["age"] for p in ancient[core] if p["age"] is not None]
+            if c is not None:
+                vis.append([1 if (lo <= v < hi) else 0 for v in a])
+            if g is not None:
+                vis.append(1)  # no-age points always visible
+        vis += [0] * n_traj + [0] * n_qc
         age_buttons.append(dict(label=f"{lo}-{hi} CE", method="update",
                                 args=[{"visible": vis}]))
 
     # ---- view 3: trajectory button ----
-    vis3 = [True] + [1] * n_core + [1] * n_traj + qc_off
-
+    vis3 = full_vis(all_core_mask, True, False)
     # ---- view 4: QC button ----
-    vis4 = [True] + [1] * n_core + [0] * n_traj + [1] * n_qc
+    vis4 = full_vis(all_core_mask, False, True)
 
     view_buttons = [
         dict(label="Panoramic (all ages)", method="update",
-             args=[{"visible": [True] + [1] * n_core + [0] * n_traj + qc_off}]),
+             args=[{"visible": full_vis(all_core_mask, False, False)}]),
         dict(label="Trajectory (100-yr)", method="update", args=[{"visible": vis3}]),
         dict(label="QC sub-library", method="update", args=[{"visible": vis4}]),
     ]
@@ -291,10 +329,16 @@ def build_pngs(args, evals, total, modern, ancient, cores):
         ax.scatter([p[1][0] for p in modern], [p[1][1] for p in modern],
                    s=8, color="#C0C0C0", alpha=0.35, linewidths=0)
         for c, pts in data.items():
-            ages = [p["age"] for p in pts]
-            ax.scatter([p["x"] for p in pts], [p["y"] for p in pts], c=ages,
-                       cmap="viridis", s=40, vmin=args.age_min, vmax=args.age_max,
-                       edgecolor="black", linewidth=0.5)
+            aged = [p for p in pts if p["age"] is not None]
+            noage = [p for p in pts if p["age"] is None]
+            if aged:
+                ax.scatter([p["x"] for p in aged], [p["y"] for p in aged],
+                           c=[p["age"] for p in aged], cmap="viridis", s=40,
+                           vmin=args.age_min, vmax=args.age_max,
+                           edgecolor="black", linewidth=0.5)
+            if noage:
+                ax.scatter([p["x"] for p in noage], [p["y"] for p in noage],
+                           c="#888888", s=40, edgecolor="black", linewidth=0.5)
         ax.set_xlabel(f"PC1 ({evals[0]/total*100:.1f}%)")
         ax.set_ylabel(f"PC2 ({evals[1]/total*100:.1f}%)")
 

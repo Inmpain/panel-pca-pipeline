@@ -160,7 +160,7 @@ def build_html(args, evals, total, modern, ancient, cores):
         ys = [r[1][1] for r in modern if r[2] == lab]
         pop_traces.append(go.Scatter(
             x=xs, y=ys, mode="markers", name=lab,
-            marker=dict(color=palette[i % len(palette)], size=5, opacity=0.30,
+            marker=dict(color=palette[i % len(palette)], size=7, opacity=0.60,
                         line=dict(width=0)), hoverinfo="skip", showlegend=True))
     n_pop = len(pop_traces)
 
@@ -321,7 +321,7 @@ def build_pngs(args, evals, total, modern, ancient, cores):
         for p in pops:
             xs = [r[1][0] for r in modern if r[2] == p]
             ys = [r[1][1] for r in modern if r[2] == p]
-            ax.scatter(xs, ys, s=8, color=pop_color[p], alpha=0.30, linewidths=0)
+            ax.scatter(xs, ys, s=14, color=pop_color[p], alpha=0.55, linewidths=0)
         for c, pts in data.items():
             aged = [p for p in pts if p["age"] is not None]
             noage = [p for p in pts if p["age"] is None]
